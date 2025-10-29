@@ -7,13 +7,13 @@ import faulthandler
 import os
 import signal
 import time
-from moviepy.editor import ImageSequenceClip
+#from moviepy.editor import ImageSequenceClip
 import numpy as np
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy
 import pandas as pd
 from PIL import Image
-from droid.robot_env import RobotEnv
+from robot_env import RaiEnv
 import tqdm
 import tyro
 
@@ -26,9 +26,9 @@ DROID_CONTROL_FREQUENCY = 15
 @dataclasses.dataclass
 class Args:
     # Hardware parameters
-    left_camera_id: str = "<your_camera_id>"  # e.g., "24259877"
-    right_camera_id: str = "<your_camera_id>"  # e.g., "24514023"
-    wrist_camera_id: str = "<your_camera_id>"  # e.g., "13062452"
+    left_camera_id: str = "zed_opencv"  # e.g., "24259877"
+    right_camera_id: str = ""  # e.g., "24514023"
+    wrist_camera_id: str = "108322073334"  # e.g., "13062452"
 
     # Policy parameters
     external_camera: str | None = (
@@ -72,18 +72,21 @@ def prevent_keyboard_interrupt():
 
 def main(args: Args):
     # Make sure external camera is specified by user -- we only use one external camera for the policy
-    assert (
-        args.external_camera is not None and args.external_camera in ["left", "right"]
-    ), f"Please specify an external camera to use for the policy, choose from ['left', 'right'], but got {args.external_camera}"
+    # assert (
+    #     args.external_camera is not None and args.external_camera in ["left", "right"]
+    # ), f"Please specify an external camera to use for the policy, choose from ['left', 'right'], but got {args.external_camera}"
 
     # Initialize the Panda environment. Using joint velocity action space and gripper position action space is very important.
-    env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
+    env = RaiEnv(action_space="joint_velocity", gripper_action_space="position")
+    print(env.get_state())
+    print(env.get_camera_extrinsics())
+    
     print("Created the droid env!")
 
     # Connect to the policy server
     policy_client = websocket_client_policy.WebsocketClientPolicy(args.remote_host, args.remote_port)
 
-    df = pd.DataFrame(columns=["success", "duration", "video_filename"])
+    #df = pd.DataFrame(columns=["success", "duration", "video_filename"])
 
     while True:
         instruction = input("Enter instruction: ")
@@ -103,7 +106,7 @@ def main(args: Args):
                 # Get the current observation
                 curr_obs = _extract_observation(
                     args,
-                    env.get_observation(),
+                    env.get_observation()[0],
                     # Save the first observation to disk
                     save_to_disk=t_step == 0,
                 )
@@ -133,7 +136,7 @@ def main(args: Args):
                         pred_action_chunk = policy_client.infer(request_data)["actions"]
                     assert pred_action_chunk.shape == (10, 8)
 
-                # Select current action to execute from chunk
+                # Select current action to execute from chunkAlso make sure to specify the external camera to use for the policy (we only input one external camera), choose
                 action = pred_action_chunk[actions_from_chunk_completed]
                 actions_from_chunk_completed += 1
 
@@ -159,7 +162,7 @@ def main(args: Args):
 
         video = np.stack(video)
         save_filename = "video_" + timestamp
-        ImageSequenceClip(list(video), fps=10).write_videofile(save_filename + ".mp4", codec="libx264")
+        #ImageSequenceClip(list(video), fps=10).write_videofile(save_filename + ".mp4", codec="libx264")
 
         success: str | float | None = None
         while not isinstance(success, float):
@@ -203,19 +206,15 @@ def _extract_observation(args: Args, obs_dict, *, save_to_disk=False):
         # The model is only trained on left stereo cams, so we only feed those.
         if args.left_camera_id in key and "left" in key:
             left_image = image_observations[key]
-        elif args.right_camera_id in key and "left" in key:
-            right_image = image_observations[key]
         elif args.wrist_camera_id in key and "left" in key:
             wrist_image = image_observations[key]
 
     # Drop the alpha dimension
     left_image = left_image[..., :3]
-    right_image = right_image[..., :3]
     wrist_image = wrist_image[..., :3]
 
     # Convert to RGB
     left_image = left_image[..., ::-1]
-    right_image = right_image[..., ::-1]
     wrist_image = wrist_image[..., ::-1]
 
     # In addition to image observations, also capture the proprioceptive state
@@ -227,13 +226,12 @@ def _extract_observation(args: Args, obs_dict, *, save_to_disk=False):
     # Save the images to disk so that they can be viewed live while the robot is running
     # Create one combined image to make live viewing easy
     if save_to_disk:
-        combined_image = np.concatenate([left_image, wrist_image, right_image], axis=1)
+        combined_image = np.concatenate([left_image[:, :640, :], wrist_image], axis=0)
         combined_image = Image.fromarray(combined_image)
         combined_image.save("robot_camera_views.png")
 
     return {
         "left_image": left_image,
-        "right_image": right_image,
         "wrist_image": wrist_image,
         "cartesian_position": cartesian_position,
         "joint_position": joint_position,
